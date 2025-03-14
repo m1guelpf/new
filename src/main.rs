@@ -3,14 +3,14 @@
 use clap::Parser;
 use dirs::config_dir;
 use grep::{
-    matcher::Matcher,
-    regex::RegexMatcher,
-    searcher::{BinaryDetection, SearcherBuilder, Sink, sinks::UTF8},
+    regex::RegexMatcherBuilder,
+    searcher::{BinaryDetection, SearcherBuilder, Sink},
 };
 use ignore::{DirEntry, Walk};
 use inquire::Text;
 use path_absolutize::Absolutize;
 use std::{
+    collections::HashMap,
     fs::{self, read_to_string},
     io::{self},
     path::{Path, PathBuf},
@@ -26,6 +26,8 @@ struct RecipeDeclaration {
 struct Recipe {
     name: String,
     command: String,
+    #[serde(default)]
+    replacements: HashMap<String, String>,
 }
 
 #[derive(Debug, Parser)]
@@ -90,7 +92,7 @@ fn main() {
         process::exit(process.code().unwrap_or(1));
     }
 
-    initialize_project(&directory, name).unwrap();
+    initialize_project(&directory, name, &recipe).unwrap();
 }
 
 fn get_recipes() -> io::Result<Vec<Recipe>> {
@@ -114,15 +116,47 @@ fn get_recipes() -> io::Result<Vec<Recipe>> {
         .map_err(io::Error::other)
 }
 
-fn initialize_project<P: AsRef<Path>>(dir: P, name: &str) -> io::Result<()> {
+fn initialize_project<P: AsRef<Path>>(dir: P, name: &str, recipe: &Recipe) -> io::Result<()> {
+    let mut replacements = recipe.replacements.clone();
+    replacements.insert("NAME".to_string(), name.to_string());
+    replacements = replacements
+        .into_iter()
+        .map(|(key, value)| (format!("{{{{{}}}}}", regex::escape(&key)), value))
+        .collect::<HashMap<_, _>>();
+
+    let all_keys_regex =
+        regex::RegexSet::new(replacements.keys().map(|key| regex::escape(key))).unwrap();
+
     let files = Walk::new(dir)
         .collect::<Result<Vec<_>, _>>()
         .map_err(io::Error::other)?
         .into_iter()
         .map(DirEntry::into_path)
-        .filter(|path| path.is_file());
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let path_str = path.to_str().unwrap();
+            if !all_keys_regex.is_match(path_str) {
+                return path;
+            }
 
-    let matcher = RegexMatcher::new(r"\{\{NAME}}").unwrap();
+            let mut new_path = path_str.to_string();
+            for (key, value) in &replacements {
+                new_path = new_path.replace(key, value);
+            }
+
+            fs::rename(path, &new_path).unwrap();
+
+            PathBuf::from(new_path)
+        });
+
+    let matcher = RegexMatcherBuilder::new()
+        .build_many(
+            &replacements
+                .keys()
+                .map(|key| regex::escape(key))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
     let mut searcher = SearcherBuilder::new()
         .line_number(false)
         .binary_detection(BinaryDetection::quit(b'\x00'))
@@ -133,9 +167,13 @@ fn initialize_project<P: AsRef<Path>>(dir: P, name: &str) -> io::Result<()> {
             &matcher,
             &file,
             SinkFn(|| {
-                let contents = read_to_string(&file)?;
+                let mut contents = read_to_string(&file)?;
 
-                fs::write(&file, contents.replace("{{NAME}}", name))
+                for (key, value) in &replacements {
+                    contents = contents.replace(key, value);
+                }
+
+                fs::write(&file, contents)
             }),
         )?;
     }
