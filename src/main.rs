@@ -2,11 +2,18 @@
 
 use clap::Parser;
 use dirs::config_dir;
+use grep::{
+    matcher::Matcher,
+    regex::RegexMatcher,
+    searcher::{BinaryDetection, SearcherBuilder, Sink, sinks::UTF8},
+};
+use ignore::{DirEntry, Walk};
 use inquire::Text;
 use path_absolutize::Absolutize;
 use std::{
-    fs, io,
-    path::PathBuf,
+    fs::{self, read_to_string},
+    io::{self},
+    path::{Path, PathBuf},
     process::{self, Stdio},
 };
 
@@ -78,7 +85,12 @@ fn main() {
         .wait()
         .unwrap();
 
-    process::exit(process.code().unwrap_or(1))
+    if !process.success() {
+        eprintln!("Failed to initialize project");
+        process::exit(process.code().unwrap_or(1));
+    }
+
+    initialize_project(&directory, name).unwrap();
 }
 
 fn get_recipes() -> io::Result<Vec<Recipe>> {
@@ -100,4 +112,49 @@ fn get_recipes() -> io::Result<Vec<Recipe>> {
         .map(|(_, content)| toml::from_str::<RecipeDeclaration>(&content).map(|decl| decl.recipe))
         .collect::<Result<Vec<_>, _>>()
         .map_err(io::Error::other)
+}
+
+fn initialize_project<P: AsRef<Path>>(dir: P, name: &str) -> io::Result<()> {
+    let files = Walk::new(dir)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(io::Error::other)?
+        .into_iter()
+        .map(DirEntry::into_path)
+        .filter(|path| path.is_file());
+
+    let matcher = RegexMatcher::new(r"\{\{NAME}}").unwrap();
+    let mut searcher = SearcherBuilder::new()
+        .line_number(false)
+        .binary_detection(BinaryDetection::quit(b'\x00'))
+        .build();
+
+    for file in files {
+        searcher.search_path(
+            &matcher,
+            &file,
+            SinkFn(|| {
+                let contents = read_to_string(&file)?;
+
+                fs::write(&file, contents.replace("{{NAME}}", name))
+            }),
+        )?;
+    }
+
+    Ok(())
+}
+
+pub struct SinkFn<F: Fn() -> io::Result<()>>(pub F);
+
+impl<F: Fn() -> io::Result<()>> Sink for SinkFn<F> {
+    type Error = io::Error;
+
+    fn matched(
+        &mut self,
+        _searcher: &grep::searcher::Searcher,
+        _mat: &grep::searcher::SinkMatch<'_>,
+    ) -> Result<bool, Self::Error> {
+        self.0()?;
+
+        Ok(false)
+    }
 }
