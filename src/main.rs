@@ -32,3 +32,6 @@ fn main() -> Result<()> {
 		Some(Commands::Edit { editor }) => commands::edit::run(editor),
 	}
 }
+
+#[cfg(test)]
+mod tests;

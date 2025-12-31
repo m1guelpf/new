@@ -5,11 +5,12 @@ use std::path::Path;
 pub fn clone_repo(repo: &str, branch: Option<&str>, destination: &Path) -> Result<()> {
 	let repo_url = normalize_repo(repo)?;
 
-	let mut fetch_options = FetchOptions::new();
-	fetch_options.depth(1);
-
 	let mut builder = RepoBuilder::new();
-	builder.fetch_options(fetch_options);
+	if !is_local_repo(&repo_url) {
+		let mut fetch_options = FetchOptions::new();
+		fetch_options.depth(1);
+		builder.fetch_options(fetch_options);
+	}
 
 	if let Some(branch) = branch {
 		builder.branch(branch);
@@ -24,6 +25,13 @@ pub fn clone_repo(repo: &str, branch: Option<&str>, destination: &Path) -> Resul
 
 fn normalize_repo(repo: &str) -> Result<String> {
 	let trimmed = repo.trim();
+
+	if cfg!(test) {
+		let path = Path::new(trimmed);
+		if path.exists() {
+			return Ok(path.to_string_lossy().to_string());
+		}
+	}
 
 	if trimmed.contains("://") || trimmed.contains("github.com") || trimmed.starts_with("git@") {
 		anyhow::bail!("Repository must be in the form owner/repo (no URLs)");
@@ -44,4 +52,8 @@ fn normalize_repo(repo: &str) -> Result<String> {
 	}
 
 	Ok(format!("https://github.com/{owner}/{repo}"))
+}
+
+fn is_local_repo(repo: &str) -> bool {
+	repo.starts_with("file://") || Path::new(repo).exists()
 }

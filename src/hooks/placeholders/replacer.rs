@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use ignore::WalkBuilder;
+use regex::escape as regex_escape;
 use std::{
 	cmp::Reverse,
 	collections::HashMap,
@@ -26,8 +27,13 @@ impl Replacer {
 			replacement_map.insert(placeholder.into_bytes(), value.into_bytes());
 		}
 
+		let pattern = literals
+			.iter()
+			.map(|literal| regex_escape(literal))
+			.collect::<Vec<_>>()
+			.join("|");
 		let matcher = RegexMatcherBuilder::new()
-			.build_literals(&literals)
+			.build(&pattern)
 			.context("Failed to build placeholder matcher")?;
 
 		Ok(Self {
